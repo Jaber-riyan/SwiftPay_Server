@@ -48,6 +48,9 @@ async function run() {
         // activity collection
         const activityCollection = database.collection('activity');
 
+        // transactions collection 
+        const transactionsCollection = database.collection('transactions');
+
 
         // middleware
         // verify token middleware
@@ -71,6 +74,42 @@ async function run() {
                 req.user = decoded;
                 next();
             })
+        }
+
+        // verify admin middleware after verify token
+        const verifyAdmin = async (req, res, next) => {
+            const email = req.user.email;
+            const query = { email: email };
+            const user = await userCollection.findOne(query);
+            const isAdmin = user?.role === 'admin';
+            if (!isAdmin) {
+                return res.status(403).send({ message: 'forbidden access' });
+            }
+            next();
+        }
+
+        // verify agent middleware after verify token
+        const verifyAgent = async (req, res, next) => {
+            const email = req.user.email;
+            const query = { email: email };
+            const user = await userCollection.findOne(query);
+            const isAgent = user?.role === 'agent';
+            if (!isAgent) {
+                return res.status(403).send({ message: 'forbidden access' });
+            }
+            next();
+        }
+
+        // verify agent middleware after verify token
+        const verifyUser = async (req, res, next) => {
+            const email = req.user.email;
+            const query = { email: email };
+            const user = await userCollection.findOne(query);
+            const isAgent = user?.role === 'user';
+            if (!isAgent) {
+                return res.status(403).send({ message: 'forbidden access' });
+            }
+            next();
         }
 
         // JWT token create and remove APIS
@@ -135,6 +174,7 @@ async function run() {
 
                 if (userData?.role == "agent") {
                     await userCollection.updateOne({ phoneNumber: userData?.phoneNumber }, { $set: { balance: 100000 } })
+                    await userCollection.updateOne({ phoneNumber: userData?.phoneNumber }, { $set: { verified: false } })
                 }
                 if (userData?.role == "user") {
                     await userCollection.updateOne({ phoneNumber: userData?.phoneNumber }, { $set: { balance: 40 } })
@@ -270,6 +310,63 @@ async function run() {
         })
 
 
+        // send money API 
+        app.post('/send-money', verifyToken, verifyUser, async (req, res) => {
+            let { amount, receiverPhoneNumber, senderEmail } = req.body;
+            amount = Number(amount); // Convert amount to a number
+
+            const senderUser = await userCollection.findOne({ email: senderEmail });
+            const receiverUser = await userCollection.findOne({ phoneNumber: receiverPhoneNumber });
+            const adminUser = await userCollection.findOne({ role: 'admin' });
+
+            let sendMoneyFee = 0;
+
+            if (isNaN(amount) || amount < 50) {
+                return res.json({
+                    status: false,
+                    message: "Amount must be a number greater than 50",
+                });
+            } else if (amount > senderUser?.balance) {
+                return res.json({
+                    status: false,
+                    message: "You don't have enough money!"
+                });
+            } else if (!receiverUser) {
+                return res.json({
+                    status: false,
+                    message: "Receiver not found, check the phone number again"
+                });
+            } else {
+                if (amount >= 100) sendMoneyFee = 5;
+
+                await userCollection.updateOne(
+                    { email: senderEmail },
+                    { $inc: { balance: -(amount + sendMoneyFee) } }
+                );
+
+                await userCollection.updateOne(
+                    { phoneNumber: receiverPhoneNumber },
+                    { $inc: { balance: amount } }
+                );
+
+                await userCollection.updateOne(
+                    { role: "admin" },
+                    { $inc: { balance: sendMoneyFee } }
+                );
+
+                return res.json({
+                    status: true,
+                    message: "Money sent successfully!",
+                    sendMoneyFee
+                });
+            }
+        });
+
+
+        // transactions related APIS 
+        // insert transaction API 
+
+
 
         // activity related APIs 
         // insert activity API 
@@ -288,6 +385,31 @@ async function run() {
             res.json({
                 status: true,
                 data: result
+            })
+        })
+
+        // user role check API 
+        app.get('/users/role/:email', verifyToken, async (req, res) => {
+            const email = req.params.email;
+            if (req.user.email !== email) return res.status(403).json({ message: "unauthorized" });
+            const query = { email: email };
+            const user = await userCollection.findOne(query);
+            let role = null;
+            if (user?.role === "admin") {
+                role = user?.role;
+            }
+            if (user?.role === "agent") {
+                role = user?.role
+            }
+            if (user?.role === "user") {
+                role = user?.role
+            }
+            if (email === undefined) {
+                role = false
+            }
+            res.json({
+                status: true,
+                data: role
             })
         })
 
