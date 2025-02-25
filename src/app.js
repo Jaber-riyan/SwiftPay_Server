@@ -14,6 +14,7 @@ app.use(morgan('dev'));
 app.use(cors({
     origin: [
         'http://localhost:5173',
+        'https://swifftpay.netlify.app'
     ],
     credentials: true
 }));
@@ -117,8 +118,8 @@ async function run() {
                     });
                 }
 
-                else if (!pin || typeof pin !== "string" || pin.length !== 5) {
-                    return res.status(400).json({ error: "PIN must be exactly 5 digits" });
+                else if (!pin || typeof pin !== "string" || pin.length !== 6) {
+                    return res.status(400).json({ status: false, message: "PIN must be exactly 6 digits" });
                 }
 
                 const hashedPin = await bcrypt.hash(pin, 10);
@@ -127,6 +128,7 @@ async function run() {
                     ...userData,
                     pin: hashedPin,
                     balance: 0,
+                    deviceId: ''
                 };
 
                 const insertResult = await userCollection.insertOne(newUser);
@@ -152,6 +154,67 @@ async function run() {
                 });
             }
         });
+
+        // user login API 
+        app.post('/login-user', async (req, res) => {
+            const { email, pin, deviceId } = req.body;
+            const user = await userCollection.findOne({ email: email })
+            if (user) {
+                const match = await bcrypt.compare(pin, user?.pin);
+                if (match && user?.role == "user" || "agent") {
+                    if (user?.deviceId == deviceId || !user?.deviceId) {
+                        const updatedUser = await userCollection.updateOne({ email: email }, { $set: { deviceId: deviceId } })
+                        return res.json({
+                            status: true,
+                            message: "Successfully Login",
+                            user,
+                            deviceId
+                        })
+                    }
+                    else if (user?.deviceId != deviceId) {
+                        return res.json({
+                            status: false,
+                            message: "You are already logged in on another device",
+                            user,
+                            deviceId
+                        });
+                    }
+                }
+                else if (match || user?.role == "admin") {
+                    return res.json({
+                        status: true,
+                        message: "Successfully Login",
+                        user,
+                        deviceId
+                    })
+                }
+                else if (!match) {
+                    res.json({
+                        status: false,
+                        message: "Invalid PIN",
+                        deviceId
+                    })
+                }
+            }
+            else {
+                res.json({
+                    status: false,
+                    message: "Invalid Credentials",
+                    deviceId
+                })
+            }
+        })
+
+        // log out from all devices API
+        app.get('/logout-all-devices/:email', async (req, res) => {
+            const email = req.params.email;
+            const updatedUser = await userCollection.updateOne({ email: email }, { $set: { deviceId: '' } })
+            res.json({
+                status: true,
+                message: "Successfully Logged Out from all devices",
+                data: updatedUser
+            })
+        })
 
         // delete user form the db API 
         app.delete('/users/:id', async (req, res) => {
