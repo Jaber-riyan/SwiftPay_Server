@@ -215,6 +215,12 @@ async function run() {
                         message: "Your Account has been Block From the admin"
                     })
                 }
+                if (user?.role == "agent" && !user?.verified) {
+                    return res.json({
+                        status: false,
+                        message: "You are not verified agent"
+                    })
+                }
                 const match = await bcrypt.compare(pin, user?.pin);
                 if (match && user?.role == "user" || "agent") {
                     if (user?.deviceId == deviceId || !user?.deviceId.length) {
@@ -412,6 +418,34 @@ async function run() {
             })
         })
 
+        // cash in API 
+        app.post('/cash-in', verifyToken, async (req, res) => {
+            const { amount, senderEmail, ...data } = req.body
+
+            const requestedUser = await userCollection.findOne({ email: senderEmail })
+            const agentUser = await userCollection.findOne({ email: data.agentEmail })
+
+            if (isNaN(amount) || amount < 50) {
+                return res.json({ status: false, message: "Amount must be a number greater than 50" });
+            }
+
+            if (!requestedUser) return res.json({ status: false, message: "Sender not found" });
+            if (!agentUser) return res.json({ status: false, message: "Agent not found" });
+
+            const insertedDoc = {
+                ...data, senderEmail, amount
+            }
+
+            await transactionsCollection.insertOne(insertedDoc)
+
+            res.json({
+                status: true,
+                insertedDoc,
+                message: "Cash In Request Send"
+            })
+
+        })
+
 
         // agent dashboard related APIS 
         // verified agents API 
@@ -438,6 +472,7 @@ async function run() {
         app.post('/cash-out/accept', verifyToken, verifyAgent, async (req, res) => {
             try {
                 const { senderEmail, agentProfit, adminProfit, amount, agentEmail, _id } = req.body;
+                amount = parseInt(amount)
 
                 // Validate request data
                 if (!senderEmail || !agentEmail || !_id || !amount || !agentProfit || !adminProfit) {
@@ -474,7 +509,8 @@ async function run() {
                     message: "Cash Out Request Accepted"
                 });
 
-            } catch (error) {
+            }
+            catch (error) {
                 console.error("Error processing cash-out request:", error);
                 res.status(500).json({ status: false, message: "Internal Server Error" });
             }
@@ -493,8 +529,73 @@ async function run() {
             })
         })
 
+        // get the pending cash in user specific agent API 
+        app.get('/cash-in/request/:email', verifyToken, verifyAgent, async (req, res) => {
+            const email = req.params.email
+            const result = await transactionsCollection.find({ status: "pending", type: "cash in user", agentEmail: email }).toArray()
+
+            res.json({
+                status: true,
+                data: result
+            })
+        })
+
+        // cash in request accept API 
+        app.post('/cash-in/accept', verifyToken, verifyAgent, async (req, res) => {
+            try {
+                let { senderEmail, amount, agentEmail, _id } = req.body;
+                amount = parseInt(amount)
+
+                if (!senderEmail || !agentEmail || !_id || !amount) {
+                    return res.json({ status: false, message: "Missing required fields" });
+                }
+
+                // Update agent's balance: Add profit first, then deduct total amount
+                await userCollection.updateOne(
+                    { email: agentEmail, role: "agent", verified: true },
+                    { $inc: { balance: -amount } }
+                );
+
+                // Deduct amount from sender (user)
+                await userCollection.updateOne(
+                    { email: senderEmail },
+                    { $inc: { balance: amount } }
+                );
+
+                // Update transaction status to 'accepted'
+                await transactionsCollection.updateOne(
+                    { _id: new ObjectId(_id) },
+                    { $set: { status: 'accepted' } }
+                );
+
+                // Send success response
+                res.json({
+                    status: true,
+                    message: "Cash In Request Accepted"
+                });
+
+            }
+            catch (error) {
+                console.error("Error processing cash-in request:", error);
+                res.status(500).json({ status: false, message: "Internal Server Error" });
+            }
+        })
+
+        // cash in request cancel API 
+        app.post('/cash-in/canceled', verifyToken, verifyAgent, async (req, res) => {
+            const { _id } = req.body;
+
+            // change status pending to cancel 
+            await transactionsCollection.updateOne({ _id: new ObjectId(_id) }, { $set: { status: "canceled" } })
+
+            res.json({
+                status: true,
+                message: "Cash In Request Canceled!"
+            })
+        })
+
         // get agent transactions API 
-        app.get('/transactions/agent/:email', verifyToken, verifyAgent, async (req, res) => {
+        app.get('/transactions/agent/:email', verifyToken, async (req, res) => {
             const email = req.params.email
             const result = await transactionsCollection.find({ agentEmail: email }).sort({ timestamp: -1 }).toArray()
             res.json({
@@ -506,7 +607,7 @@ async function run() {
 
         // user dashboard related APIS 
         // get user transactions API 
-        app.get('/transactions/user/:email', verifyToken, verifyUser, async (req, res) => {
+        app.get('/transactions/user/:email', verifyToken, async (req, res) => {
             const email = req.params.email
             const result = await transactionsCollection.find({ senderEmail: email }).sort({ timestamp: -1 }).toArray()
             res.json({
@@ -594,6 +695,40 @@ async function run() {
             })
         })
 
+        // get admin stats 
+        app.get('/admin/stats', async (req, res) => {
+            const totalUser = await userCollection.find({ role: "user" }).toArray()
+            const totalAgent = await userCollection.find({ role: "agent", verified: true }).toArray()
+            const totalTransactions = await transactionsCollection.find().toArray()
+            let systemTotalMoney = 0
+            for (let i = 0; i < totalTransactions.length; i++) {
+                if (totalTransactions[i].type == "send money") {
+                    continue
+                }
+                else if (totalTransactions[i].type == "cash out") {
+                    const amount = parseInt(totalTransactions[i].amount)
+                    systemTotalMoney -= amount
+                }
+                else {
+                    const amount = parseInt(totalTransactions[i].amount)
+                    systemTotalMoney += amount
+
+                }
+            }
+            const allUser = await userCollection.find().toArray()
+            for (let i = 0; i < allUser.length; i++) {
+                const balance = parseInt(allUser[i].balance)
+                systemTotalMoney += balance
+            }
+
+            res.json({
+                status: true,
+                totalUser: totalUser.length,
+                totalAgent: totalAgent.length,
+                totalTransactions: totalTransactions.length,
+                systemTotalMoney
+            })
+        })
 
 
         // transactions related APIS 
