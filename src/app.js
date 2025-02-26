@@ -182,9 +182,11 @@ async function run() {
                     await userCollection.updateOne({ phoneNumber: userData?.phoneNumber }, { $set: { balance: 100000 } })
                     await userCollection.updateOne({ phoneNumber: userData?.phoneNumber }, { $set: { verified: false } })
                     await userCollection.updateOne({ phoneNumber: userData?.phoneNumber }, { $set: { status: "pending" } })
+                    await userCollection.updateOne({ phoneNumber: userData?.phoneNumber }, { $set: { block: false } })
                 }
                 if (userData?.role == "user") {
                     await userCollection.updateOne({ phoneNumber: userData?.phoneNumber }, { $set: { balance: 40 } })
+                    await userCollection.updateOne({ phoneNumber: userData?.phoneNumber }, { $set: { block: false } })
                 }
 
                 res.json({
@@ -207,6 +209,12 @@ async function run() {
             const { email, pin, deviceId } = req.body;
             const user = await userCollection.findOne({ email: email })
             if (user) {
+                if (user?.block) {
+                    return res.json({
+                        status: false,
+                        message: "Your Account has been Block From the admin"
+                    })
+                }
                 const match = await bcrypt.compare(pin, user?.pin);
                 if (match && user?.role == "user" || "agent") {
                     if (user?.deviceId == deviceId || !user?.deviceId.length) {
@@ -521,7 +529,7 @@ async function run() {
 
         // get un verified agent API 
         app.get('/un-valid/agent/admin', verifyToken, verifyAdmin, async (req, res) => {
-            const result = await userCollection.find({ role: "agent", verified: false, status:"pending" }).toArray()
+            const result = await userCollection.find({ role: "agent", verified: false, status: "pending" }).toArray()
             res.json({
                 status: true,
                 data: result
@@ -554,6 +562,35 @@ async function run() {
             res.json({
                 status: true,
                 message: "Successfully Canceled the agent request"
+            })
+        })
+
+        // get the all users API 
+        app.get('/all/users', verifyToken, verifyAdmin, async (req, res) => {
+            const result = await userCollection.find({ role: { $in: ["agent", "user"] } }).toArray();
+            res.json({
+                status: true,
+                data: result
+            })
+        })
+
+        // block a user API 
+        app.post('/users/block', verifyToken, verifyAdmin, async (req, res) => {
+            const { email } = req.body
+            await userCollection.updateOne({ email: email }, { $set: { block: true } })
+            res.json({
+                status: true,
+                message: "Successfully Block this user"
+            })
+        })
+
+        // unblock a user API 
+        app.post('/users/unblock', verifyToken, verifyAdmin, async (req, res) => {
+            const { email } = req.body
+            await userCollection.updateOne({ email: email }, { $set: { block: false } })
+            res.json({
+                status: true,
+                message: "Successfully Unblock this user"
             })
         })
 
