@@ -471,7 +471,7 @@ async function run() {
         // cash out request accept API 
         app.post('/cash-out/accept', verifyToken, verifyAgent, async (req, res) => {
             try {
-                const { senderEmail, agentProfit, adminProfit, amount, agentEmail, _id } = req.body;
+                let { senderEmail, agentProfit, adminProfit, amount, agentEmail, _id } = req.body;
                 amount = parseInt(amount)
 
                 // Validate request data
@@ -506,13 +506,14 @@ async function run() {
                 // Send success response
                 res.json({
                     status: true,
-                    message: "Cash Out Request Accepted"
+                    message: "Cash Out Request Accepted",
+                    body: req.body
                 });
 
             }
             catch (error) {
                 console.error("Error processing cash-out request:", error);
-                res.status(500).json({ status: false, message: "Internal Server Error" });
+                res.json({ status: false, message: "Internal Server Error" });
             }
         });
 
@@ -605,6 +606,7 @@ async function run() {
         })
 
 
+        
         // user dashboard related APIS 
         // get user transactions API 
         app.get('/transactions/user/:email', verifyToken, async (req, res) => {
