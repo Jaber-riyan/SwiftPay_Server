@@ -51,6 +51,8 @@ async function run() {
         // transactions collection 
         const transactionsCollection = database.collection('transactions');
 
+        const totalMoneyCollection = database.collection("totalMoney")
+
 
         // middleware
         // verify token middleware
@@ -93,7 +95,7 @@ async function run() {
             const email = req.user.email;
             const query = { email: email };
             const user = await userCollection.findOne(query);
-            const isAgent = user?.role === 'agent';
+            const isAgent = user?.role === 'agent' && user?.verified;
             if (!isAgent) {
                 return res.status(403).send({ message: 'forbidden access' });
             }
@@ -110,6 +112,10 @@ async function run() {
                 return res.status(403).send({ message: 'forbidden access' });
             }
             next();
+        }
+
+        const totalMoneyOfSystem = async (amount) => {
+            const systemMoney = await totalMoneyCollection.findOne()
         }
 
         // JWT token create and remove APIS
@@ -202,7 +208,7 @@ async function run() {
             if (user) {
                 const match = await bcrypt.compare(pin, user?.pin);
                 if (match && user?.role == "user" || "agent") {
-                    if (user?.deviceId == deviceId || !user?.deviceId) {
+                    if (user?.deviceId == deviceId || !user?.deviceId.length) {
                         const updatedUser = await userCollection.updateOne({ email: email }, { $set: { deviceId: deviceId } })
                         return res.json({
                             status: true,
@@ -214,6 +220,7 @@ async function run() {
                     else if (user?.deviceId != deviceId) {
                         return res.json({
                             status: false,
+                            deviceLogin: true,
                             message: "You are already logged in on another device",
                             user,
                             deviceId
@@ -232,7 +239,7 @@ async function run() {
                     res.json({
                         status: false,
                         message: "Invalid PIN",
-                        deviceId
+                        // deviceId
                     })
                 }
             }
@@ -309,62 +316,197 @@ async function run() {
             })
         })
 
-
+        // money operation related APIS 
         // send money API 
-        app.post('/send-money', verifyToken, verifyUser, async (req, res) => {
-            let { amount, receiverPhoneNumber, senderEmail } = req.body;
-            amount = Number(amount); // Convert amount to a number
+        app.post('/send-money', verifyToken, async (req, res) => {
+            try {
+                let { amount, receiverPhoneNumber, senderEmail, pin } = req.body;
+                amount = Number(amount);
 
-            const senderUser = await userCollection.findOne({ email: senderEmail });
-            const receiverUser = await userCollection.findOne({ phoneNumber: receiverPhoneNumber });
-            const adminUser = await userCollection.findOne({ role: 'admin' });
+                if (isNaN(amount) || amount < 50) {
+                    return res.json({ status: false, message: "Amount must be a number greater than 50" });
+                }
 
-            let sendMoneyFee = 0;
+                const senderUser = await userCollection.findOne({ email: senderEmail });
+                if (!senderUser) return res.json({ status: false, message: "Sender not found" });
 
-            if (isNaN(amount) || amount < 50) {
-                return res.json({
-                    status: false,
-                    message: "Amount must be a number greater than 50",
-                });
-            } else if (amount > senderUser?.balance) {
-                return res.json({
-                    status: false,
-                    message: "You don't have enough money!"
-                });
-            } else if (!receiverUser) {
-                return res.json({
-                    status: false,
-                    message: "Receiver not found, check the phone number again"
-                });
-            } else {
-                if (amount >= 100) sendMoneyFee = 5;
+                const receiverUser = await userCollection.findOne({ phoneNumber: receiverPhoneNumber });
+                if (!receiverUser) return res.json({ status: false, message: "Receiver not found" });
 
-                await userCollection.updateOne(
-                    { email: senderEmail },
-                    { $inc: { balance: -(amount + sendMoneyFee) } }
-                );
+                if (senderUser.phoneNumber === receiverPhoneNumber) {
+                    return res.json({ status: false, message: "You can't send money to yourself" });
+                }
 
-                await userCollection.updateOne(
-                    { phoneNumber: receiverPhoneNumber },
-                    { $inc: { balance: amount } }
-                );
+                console.log("Received PIN:", pin);
+                console.log("Stored Hashed PIN:", senderUser.pin);
 
-                await userCollection.updateOne(
-                    { role: "admin" },
-                    { $inc: { balance: sendMoneyFee } }
-                );
+                const pinIsMatch = await bcrypt.compare(pin, senderUser.pin);
+                if (!pinIsMatch) {
+                    return res.json({ status: false, message: "PIN Number Doesn't Match" });
+                }
 
-                return res.json({
-                    status: true,
-                    message: "Money sent successfully!",
-                    sendMoneyFee
-                });
+                let sendMoneyFee = amount >= 100 ? 5 : 0;
+                let totalAmount = amount + sendMoneyFee;
+
+                if (totalAmount > senderUser.balance) {
+                    return res.json({ status: false, message: "You don't have enough money!" });
+                }
+
+                await userCollection.updateOne({ email: senderEmail }, { $inc: { balance: -totalAmount } });
+                await userCollection.updateOne({ phoneNumber: receiverPhoneNumber }, { $inc: { balance: amount } });
+                await userCollection.updateOne({ role: "admin" }, { $inc: { balance: sendMoneyFee } });
+
+                res.json({ status: true, message: "Money sent successfully!", sendMoneyFee });
+            } catch (error) {
+                res.status(500).json({ status: false, message: "Server error", error: error.message });
             }
         });
+
+        // cash out API 
+        app.post('/cash-out', verifyToken, async (req, res) => {
+            const { amount, pin, senderEmail, ...data } = req.body
+            const senderUser = await userCollection.findOne({ email: senderEmail })
+            const agentUser = await userCollection.findOne({ email: data.agentEmail })
+
+
+            if (isNaN(amount) || amount < 50) {
+                return res.json({ status: false, message: "Amount must be a number greater than 50" });
+            }
+
+
+            // Calculate profits
+            const adminProfit = (amount * 0.005);
+            const agentProfit = (amount * 0.01);
+
+            if (!senderUser) return res.json({ status: false, message: "Sender not found" });
+            if (!agentUser) return res.json({ status: false, message: "Agent not found" });
+
+            const pinIsMatch = await bcrypt.compare(pin, senderUser?.pin);
+            if (!pinIsMatch) {
+                return res.json({ status: false, message: "PIN Number Doesn't Match" });
+            }
+
+            if (amount > senderUser.balance) {
+                return res.json({ status: false, message: "You don't have enough money!" });
+            }
+
+            const insertedDoc = {
+                ...data, senderEmail, amount, adminProfit, agentProfit
+            }
+
+            const result = await transactionsCollection.insertOne(insertedDoc)
+
+            res.json({
+                status: true,
+                result,
+                message: "Cash Out Request Send"
+            })
+        })
+
+
+        // agent related APIS 
+        // verified agents API 
+        app.get('/verified-agents', verifyToken, async (req, res) => {
+            const result = await userCollection.find({ role: "agent", verified: true }).toArray()
+            res.json({
+                status: true,
+                data: result
+            })
+        })
+
+        // get the pending cash out in specific agent API 
+        app.get('/cash-out/request/:email', verifyToken, verifyAgent, async (req, res) => {
+            const email = req.params.email
+            const result = await transactionsCollection.find({ status: "pending", type: "cash out", agentEmail: email }).toArray()
+
+            res.json({
+                status: true,
+                data: result
+            })
+        })
+
+        // cash out request accept API 
+        app.post('/cash-out/accept', verifyToken, verifyAgent, async (req, res) => {
+            try {
+                const { senderEmail, agentProfit, adminProfit, amount, agentEmail, _id } = req.body;
+
+                // Validate request data
+                if (!senderEmail || !agentEmail || !_id || !amount || !agentProfit || !adminProfit) {
+                    return res.json({ status: false, message: "Missing required fields" });
+                }
+
+                // Update agent's balance: Add profit first, then deduct total amount
+                await userCollection.updateOne(
+                    { email: agentEmail, role: "agent", verified: true },
+                    { $inc: { balance: agentProfit - amount } }
+                );
+
+                // Update admin's balance
+                await userCollection.updateOne(
+                    { role: "admin" },
+                    { $inc: { balance: adminProfit } }
+                );
+
+                // Deduct amount from sender (user)
+                await userCollection.updateOne(
+                    { email: senderEmail },
+                    { $inc: { balance: -amount } }
+                );
+
+                // Update transaction status to 'accepted'
+                await transactionsCollection.updateOne(
+                    { _id: new ObjectId(_id) },
+                    { $set: { status: 'accepted' } }
+                );
+
+                // Send success response
+                res.json({
+                    status: true,
+                    message: "Cash Out Request Accepted"
+                });
+
+            } catch (error) {
+                console.error("Error processing cash-out request:", error);
+                res.status(500).json({ status: false, message: "Internal Server Error" });
+            }
+        });
+
+        // cash out request cancel API 
+        app.post('/cash-out/canceled', verifyToken, verifyAgent, async (req, res) => {
+            const { _id } = req.body
+
+            // change status pending to cancel 
+            await transactionsCollection.updateOne({ _id: new ObjectId(_id) }, { $set: { status: "canceled" } })
+
+            res.json({
+                status: true,
+                message: "Cash Out Request Canceled!"
+            })
+        })
+
+        // get agent transactions API 
+        app.get('/transactions/agent/:email', verifyToken, verifyAgent, async (req, res) => {
+            const email = req.params.email
+            const result = await transactionsCollection.find({ agentEmail: email }).sort({ timestamp: -1 }).toArray()
+            res.json({
+                status: true,
+                data: result
+            })
+        })
+
 
 
         // transactions related APIS 
         // insert transaction API 
+        app.post('/transactions', verifyToken, async (req, res) => {
+            try {
+                const transaction = req.body;
+                const result = await transactionsCollection.insertOne(transaction);
+                res.json({ status: true, transaction });
+            } catch (error) {
+                res.status(500).json({ status: false, message: "Server error", error: error.message });
+            }
+        });
 
 
 
