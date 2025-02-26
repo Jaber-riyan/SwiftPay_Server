@@ -107,8 +107,8 @@ async function run() {
             const email = req.user.email;
             const query = { email: email };
             const user = await userCollection.findOne(query);
-            const isAgent = user?.role === 'user';
-            if (!isAgent) {
+            const isUser = user?.role === 'user';
+            if (!isUser) {
                 return res.status(403).send({ message: 'forbidden access' });
             }
             next();
@@ -181,6 +181,7 @@ async function run() {
                 if (userData?.role == "agent") {
                     await userCollection.updateOne({ phoneNumber: userData?.phoneNumber }, { $set: { balance: 100000 } })
                     await userCollection.updateOne({ phoneNumber: userData?.phoneNumber }, { $set: { verified: false } })
+                    await userCollection.updateOne({ phoneNumber: userData?.phoneNumber }, { $set: { status: "pending" } })
                 }
                 if (userData?.role == "user") {
                     await userCollection.updateOne({ phoneNumber: userData?.phoneNumber }, { $set: { balance: 40 } })
@@ -404,7 +405,7 @@ async function run() {
         })
 
 
-        // agent related APIS 
+        // agent dashboard related APIS 
         // verified agents API 
         app.get('/verified-agents', verifyToken, async (req, res) => {
             const result = await userCollection.find({ role: "agent", verified: true }).toArray()
@@ -491,6 +492,68 @@ async function run() {
             res.json({
                 status: true,
                 data: result
+            })
+        })
+
+
+        // user dashboard related APIS 
+        // get user transactions API 
+        app.get('/transactions/user/:email', verifyToken, verifyUser, async (req, res) => {
+            const email = req.params.email
+            const result = await transactionsCollection.find({ senderEmail: email }).sort({ timestamp: -1 }).toArray()
+            res.json({
+                status: true,
+                data: result
+            })
+        })
+
+
+
+        // admin dashboard related APIS 
+        // get all transactions API 
+        app.get('/transactions/admin', verifyToken, verifyAdmin, async (req, res) => {
+            const result = await transactionsCollection.find().sort({ timestamp: -1 }).toArray()
+            res.json({
+                status: true,
+                data: result
+            })
+        })
+
+        // get un verified agent API 
+        app.get('/un-valid/agent/admin', verifyToken, verifyAdmin, async (req, res) => {
+            const result = await userCollection.find({ role: "agent", verified: false, status:"pending" }).toArray()
+            res.json({
+                status: true,
+                data: result
+            })
+        })
+
+        // accept agent request API 
+        app.post('/un-valid/agent/accept', verifyToken, verifyAdmin, async (req, res) => {
+            const { phoneNumber } = req.body
+
+            // update agent verified field to true 
+            await userCollection.updateOne({ phoneNumber: phoneNumber }, { $set: { verified: true } })
+
+            // update agent status field to accepted 
+            await userCollection.updateOne({ phoneNumber: phoneNumber }, { $set: { status: "accepted" } })
+
+            res.json({
+                status: true,
+                message: "Successfully accepted the agent request"
+            })
+        })
+
+        // cancel agent request API 
+        app.post('/un-valid/agent/cancel', verifyToken, verifyAdmin, async (req, res) => {
+            const { phoneNumber } = req.body
+
+            // update agent status field to accepted 
+            await userCollection.updateOne({ phoneNumber: phoneNumber }, { $set: { status: "canceled" } })
+
+            res.json({
+                status: true,
+                message: "Successfully Canceled the agent request"
             })
         })
 
